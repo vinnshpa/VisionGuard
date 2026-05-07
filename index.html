@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Monitor Jarak Pandang - Pro Version</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background-color: #1e1e2f; color: white; text-align: center; margin: 0; padding: 20px; }
+        .container { display: flex; flex-direction: column; align-items: center; gap: 15px; }
+        canvas { border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); background-color: #000; transform: scaleX(-1); width: 100%; max-width: 640px; }
+        .dashboard { display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; margin-top: 10px; }
+        .card { background: #2a2a40; padding: 15px; border-radius: 10px; width: 220px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        .settings-card { background: #353550; padding: 20px; border-radius: 12px; margin-bottom: 15px; width: 100%; max-width: 600px; border: 1px solid #4e4e70; }
+        
+        select, input[type="file"] { background: #1e1e2f; color: white; border: 1px solid #666; padding: 8px; border-radius: 5px; margin-top: 10px; cursor: pointer; }
+        .aman { color: #4ade80; } .waspada { color: #facc15; } .bahaya { color: #f87171; }
+        .input_video { display: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>👁️ AI Eye Health Monitor</h1>
+
+    <!-- PANEL PENGATURAN -->
+    <div class="settings-card">
+        <h3>⚙️ Pengaturan Suara</h3>
+        <label>Pilih Mode Suara:</label><br>
+        <select id="mode-suara">
+            <option value="beep">Mode Alarm (Beep 150ms)</option>
+            <option value="lagu">Mode Lagu (Upload MP3)</option>
+        </select>
+        <div id="upload-container" style="display: none; margin-top: 10px;">
+            <input type="file" id="audio-file" accept="audio/*">
+            <p><small>*Lagu akan berputar saat dekat, berhenti saat menjauh.</small></p>
+        </div>
+    </div>
+
+    <video class="input_video" autoplay playsinline></video>
+    <canvas class="output_canvas" width="640" height="480"></canvas>
+
+    <div class="dashboard">
+        <div class="card">
+            <h2>Jarak</h2>
+            <div id="status-jarak" class="aman">MENCARI...</div>
+        </div>
+        <div class="card">
+            <h2>Durasi Layar</h2>
+            <div id="status-waktu" class="aman">00:00</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const videoElement = document.querySelector('.input_video');
+    const canvasElement = document.querySelector('.output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    
+    const modeSelect = document.getElementById('mode-suara');
+    const uploadContainer = document.getElementById('upload-container');
+    const audioInput = document.getElementById('audio-file');
+    const uiStatusJarak = document.getElementById('status-jarak');
+    const uiStatusWaktu = document.getElementById('status-waktu');
+
+    // KONFIGURASI
+    const BATAS_BAHAYA = 0.210;
+    let waktuMulai = null;
+    let waktuTerakhirBunyi = 0;
+    let customAudio = null;
+
+    // Inisialisasi Audio Context untuk Beep
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Toggle Tampilan Upload
+    modeSelect.onchange = () => {
+        uploadContainer.style.display = modeSelect.value === 'lagu' ? 'block' : 'none';
+        if (customAudio) customAudio.pause(); // Stop lagu jika ganti mode
+    };
+
+    // Handler Upload Lagu
+    audioInput.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            const url = URL.createObjectURL(file);
+            customAudio = new Audio(url);
+            customAudio.loop = true;
+            alert("Lagu custom siap!");
+        }
+    };
+
+    function mainkanBeep() {
+        if(audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(1000, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.08);
+    }
+
+    function onResults(results) {
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+            const landmarks = results.multiFaceLandmarks[0];
+            
+            // Hitung Jarak
+            const dx = landmarks[263].x - landmarks[33].x;
+            const dy = landmarks[263].y - landmarks[33].y;
+            const jarakMata = Math.sqrt(dx * dx + dy * dy);
+
+            if (jarakMata >= BATAS_BAHAYA) {
+                uiStatusJarak.innerText = "TERLALU DEKAT!";
+                uiStatusJarak.className = "bahaya";
+
+                if (modeSelect.value === 'beep') {
+                    // Mode Beep 150ms
+                    let sekarang = Date.now();
+                    if (sekarang - waktuTerakhirBunyi > 150) {
+                        mainkanBeep();
+                        waktuTerakhirBunyi = sekarang;
+                    }
+                } else if (modeSelect.value === 'lagu' && customAudio) {
+                    // Mode Lagu (Terus berputar)
+                    customAudio.play().catch(() => {});
+                }
+            } else {
+                uiStatusJarak.innerText = "AMAN";
+                uiStatusJarak.className = "aman";
+                waktuTerakhirBunyi = 0;
+                // Jika mode lagu, stop saat sudah aman
+                if (customAudio) {
+                    customAudio.pause();
+                    customAudio.currentTime = 0;
+                }
+            }
+
+            // Timer (20-20-20 Rule)
+            if (!waktuMulai) waktuMulai = Date.now();
+            const detik = Math.floor((Date.now() - waktuMulai) / 1000);
+            uiStatusWaktu.innerText = `${Math.floor(detik/60).toString().padStart(2,'0')}:${(detik%60).toString().padStart(2,'0')}`;
+        }
+        canvasCtx.restore();
+    }
+
+    // MediaPipe Setup
+    const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+    faceMesh.setOptions({maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5});
+    faceMesh.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => { await faceMesh.send({image: videoElement}); },
+        width: 640, height: 480
+    });
+    camera.start();
+
+    // Aktifkan Audio lewat klik
+    document.body.onclick = () => { if(audioCtx.state === 'suspended') audioCtx.resume(); };
+</script>
+</body>
+</html>
